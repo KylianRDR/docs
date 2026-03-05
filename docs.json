@@ -1,41 +1,18 @@
 {
   "$schema": "https://mintlify.com/docs.json",
+  "name": "Mon Doc",
   "theme": "mint",
-  "name": "ROOT - Project",
-  "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
-  },
-  "favicon": "/images/root.png",
   "navigation": {
-    "pages": [
-      "untitled-page"
+    "tabs": [
+      {
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "Documents",
+            "pages": ["doc"]
+          }
+        ]
+      }
     ]
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/kylianrdr",
-      "linkedin": "https://linkedin.com/in/kylian-rassiat-2393b6279"
-    }
-  },
-  "description": "Official documentation for the ROOT framework"
+  }
 }

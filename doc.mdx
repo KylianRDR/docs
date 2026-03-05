@@ -1,0 +1,1100 @@
+# ROOT — Documentation du Framework
+
+ROOT est un framework FiveM développé en Lua, conçu pour servir de socle complet à un serveur RP. Il gère l'authentification, les personnages, l'économie, les véhicules, les sociétés, l'inventaire et bien plus, le tout via une architecture modulaire claire.
+
+---
+
+## Sommaire
+
+1. [Architecture générale](#architecture-générale)
+2. [Configuration](#configuration)
+3. [Base de données](#base-de-données)
+4. [Authentification](#authentification)
+5. [Système de personnages](#système-de-personnages)
+6. [Joueur — côté serveur](#joueur--côté-serveur)
+7. [Joueur — côté client](#joueur--côté-client)
+8. [Véhicules](#véhicules)
+9. [Sociétés](#sociétés)
+10. [Groupes et permissions](#groupes-et-permissions)
+11. [Métiers (Jobs)](#métiers-jobs)
+12. [Inventaire](#inventaire)
+13. [HUD](#hud)
+14. [Notifications](#notifications)
+15. [Menu UI](#menu-ui)
+16. [Garage](#garage)
+17. [Propriétés](#propriétés)
+18. [Points d'intérêt (POI)](#points-dintérêt-poi)
+19. [Commandes](#commandes)
+20. [Exports serveur](#exports-serveur)
+21. [Exports client](#exports-client)
+22. [Utilitaires partagés](#utilitaires-partagés)
+23. [Gestion des erreurs](#gestion-des-erreurs)
+
+---
+
+## Architecture générale
+
+```
+kr/
+├── config.lua              # Configuration globale
+├── fxmanifest.lua          # Manifest de la ressource
+├── shared/
+│   ├── Utils.lua           # Fonctions utilitaires partagées
+│   ├── Logger.lua          # Système de logs
+│   └── CommandValidator.lua # Validation des commandes
+├── server/
+│   ├── classes/            # Classes serveur (Framework, Player, Vehicle, Society...)
+│   ├── helpers/            # Helpers serveur (NotifyHelper, StateHelper, PlayerHelper...)
+│   ├── init.lua            # Initialisation serveur
+│   ├── main.lua            # Événements principaux serveur
+│   ├── player.lua          # Événements joueur serveur
+│   ├── character.lua       # Gestion des personnages serveur
+│   ├── vehicle.lua         # Gestion des véhicules serveur
+│   ├── society.lua         # Gestion des sociétés serveur
+│   ├── commands.lua        # Commandes serveur
+│   └── database.lua        # Fonctions de base de données
+├── client/
+│   ├── classes/            # Classes client (FrameworkClient, PlayerClient, VehicleClient...)
+│   ├── helpers/            # Helpers client (EntityHelper...)
+│   ├── main.lua            # Événements principaux client
+│   ├── player.lua          # Gestion joueur client
+│   ├── character.lua       # Création / sélection de personnage client
+│   ├── vehicle.lua         # Gestion des véhicules client
+│   ├── society.lua         # UI sociétés client
+│   └── commands.lua        # Réponses aux commandes côté client
+└── modules/
+    ├── login/              # Authentification (compte, token, hash)
+    ├── menu/               # Système de menus NUI
+    ├── notif/              # Système de notifications NUI
+    ├── hud/                # HUD (santé, faim, soif, armure, voix)
+    ├── inv/                # Inventaire complet (items, armes, coffres, shops, craft)
+    ├── garage/             # Garage (rangement et sortie de véhicules)
+    ├── property/           # Propriétés et appartements
+    ├── poi/                # Points d'intérêt dynamiques
+    ├── interact/           # Système d'interaction 3D
+    ├── pets/               # Animaux de compagnie
+    ├── cache/              # Cache client
+    └── custom-ui/          # UI personnalisée
+```
+
+Le framework s'initialise automatiquement au démarrage de la ressource via `Framework.Initialize()`, qui charge dans l'ordre : la base de données, les métiers, les sociétés et les items.
+
+---
+
+## Configuration
+
+Fichier : `config.lua`
+
+| Clé | Valeur par défaut | Description |
+|---|---|---|
+| `Config.MaxCharacters` | `5` | Nombre max de personnages par compte |
+| `Config.DefaultJob` | `'unemployed'` | Métier par défaut à la création |
+| `Config.DefaultJobGrade` | `0` | Grade par défaut |
+| `Config.DefaultGroup` | `'user'` | Groupe de permission par défaut |
+| `Config.DefaultInventoryWeight` | `50000` | Poids max de l'inventaire |
+| `Config.SpawnPoint` | Coordonnées définies | Point de spawn par défaut |
+| `Config.DefaultMetas` | Table | Valeurs initiales (argent, skin, faim, soif...) |
+| `Config.Webhook.enabled` | `true` | Active les logs Discord |
+
+Les metas par défaut attribuées à un nouveau personnage sont :
+
+```lua
+Config.DefaultMetas = {
+    job         = 'unemployed',
+    job_grade   = 0,
+    cash        = 5000,
+    bank        = 10000,
+    inventory   = json.encode({}),
+    skin        = json.encode({}),
+    hunger      = '100',
+    thirst      = '100',
+}
+```
+
+---
+
+## Base de données
+
+Le framework repose sur **oxmysql**. Voici les tables utilisées :
+
+| Table | Rôle |
+|---|---|
+| `users` | Comptes liés à une licence Steam |
+| `root_accounts` | Comptes d'authentification (login/mot de passe) |
+| `characters` | Personnages des joueurs |
+| `character_metas` | Données variables par personnage (argent, skin, position...) |
+| `owners` | Propriétaires d'inventaires |
+| `inventories` | Inventaires (items, poids max) |
+| `vehicles` | Véhicules possédés |
+| `vehicle_metas` | Données variables par véhicule (props, position, garage...) |
+| `jobs` | Définition des métiers |
+| `job_grades` | Grades des métiers |
+| `societies` | Sociétés (organisations) |
+| `society_accounts` | Compte bancaire des sociétés |
+| `society_grades` | Grades des sociétés |
+| `society_employees` | Employés des sociétés |
+
+Le système de metas (clé/valeur) sur les personnages et les véhicules permet d'étendre les données sans modifier le schéma de base.
+
+---
+
+## Authentification
+
+Module : `modules/login/`
+
+Le système d'authentification est indépendant du reste du framework. Il fonctionne avec un compte (username + email + mot de passe hashé) distinct de la licence Steam.
+
+**Flux de connexion :**
+
+1. Le joueur se connecte et le module `root_auth` s'ouvre.
+2. Il crée ou se connecte à son compte.
+3. Une fois authentifié, l'événement `root_auth:playerAuthenticated` est déclenché côté serveur.
+4. Le framework reçoit cet événement et marque le joueur comme authentifié dans `authenticatedPlayers`.
+5. Le client envoie `framework:server:playerReadyToLoad`.
+6. Le serveur charge le dernier personnage utilisé, ou ouvre la sélection si aucun n'est assigné.
+
+**Sécurité :**
+
+- Un salt configurable est requis via le convar `root_auth_salt` dans `server.cfg`.
+- Le framework rejette toute tentative de chargement de personnage si le joueur n'est pas dans `authenticatedPlayers`.
+- Les tentatives de connexion sont rate-limitées.
+- Les événements importants (connexion, inscription, échec...) sont envoyés sur un webhook Discord configurable.
+
+**Configuration du salt :**
+
+```
+set root_auth_salt "VOTRE_SALT_ALEATOIRE_32_CHARS"
+```
+
+---
+
+## Système de personnages
+
+### Sélection
+
+Après authentification, le serveur vérifie si un personnage est assigné au compte actif. Si oui, il le charge directement. Sinon, il ouvre la sélection via `framework:client:openCharacterSelect`.
+
+Le nombre de personnages est limité par `Config.MaxCharacters`.
+
+### Création
+
+La création de personnage passe par un creator NUI intégré. Le joueur définit :
+
+- Prénom, nom, date de naissance, sexe
+- Apparence physique complète (head blend, traits du visage, overlays, couleur des yeux...)
+- Tenues (vêtements, chaussures, accessoires...)
+
+À la confirmation, les données sont envoyées via `framework:server:createCharacter`. Le serveur valide, insère en base, crée l'owner et l'inventaire associés, puis charge le joueur.
+
+### Modification d'apparence
+
+La commande `/modifychar` (en jeu) permet à un joueur de ré-ouvrir le creator sur son personnage existant. Les données de skin sont stockées en JSON dans les metas sous la clé `skin`.
+
+### Suppression
+
+Un joueur peut supprimer un personnage depuis la sélection. Le serveur vérifie que le personnage appartient bien à l'utilisateur avant toute suppression.
+
+---
+
+## Joueur — côté serveur
+
+Classe : `server/classes/Player.lua`
+
+### Propriétés disponibles
+
+```lua
+player.source       -- ID serveur FiveM
+player.license      -- Licence Steam
+player.userId       -- ID de l'utilisateur
+player.characterId  -- ID du personnage actif
+player.group        -- Groupe de permission
+player.firstname    -- Prénom
+player.lastname     -- Nom
+player.sex          -- Sexe ('M' ou 'F')
+```
+
+### Méthodes
+
+```lua
+-- Identité
+player:getName()                    -- Retourne "Prénom Nom"
+player:getGroup()                   -- Retourne le groupe actuel
+player:hasPermission('admin')       -- Vérifie si le joueur a la permission
+
+-- Argent
+player:getMoney('cash')             -- Récupère l'argent liquide
+player:getMoney('bank')             -- Récupère l'argent en banque
+player:addMoney('cash', 500)        -- Ajoute de l'argent
+player:removeMoney('bank', 1000)    -- Retire de l'argent (retourne true/false)
+
+-- Métier
+player:getJob()                     -- Retourne job, jobGrade
+player:setJob('police', 2)          -- Définit le métier et le grade
+
+-- Statuts
+player:setDead(true)                -- Marque comme mort (state bag)
+player:setCuffed(true)              -- Marque comme menotté (state bag)
+player:setOnDuty(true)              -- Marque comme en service (state bag)
+
+-- Metas (données persistantes)
+player:get('key', defaultValue)     -- Lit une meta
+player:set('key', value)            -- Écrit une meta (BDD + cache)
+
+-- Véhicules
+player:getVehicles(callback)        -- Récupère les véhicules en BDD
+player:addVehicle(model, plate, cb) -- Ajoute un véhicule en BDD
+
+-- Inventaire
+player:getInventory(callback)       -- Charge l'inventaire
+
+-- Sauvegarde
+player:save()                       -- Sauvegarde la position
+
+-- Divers
+player:log(type, message, data)     -- Log un événement dans les logs framework
+```
+
+### Récupérer un joueur côté serveur
+
+```lua
+local player = Framework.GetPlayer(source)          -- Par source ID
+local player = Framework.GetPlayerFromId(characterId) -- Par character ID
+local player = Framework.GetPlayerFromLicense(license) -- Par licence
+```
+
+---
+
+## Joueur — côté client
+
+Classe : `client/classes/PlayerClient.lua`
+Contrôleur : `client/classes/FrameworkClient.lua`
+
+### Accès au joueur local
+
+```lua
+local player = FrameworkClient.GetPlayer()
+local isLoaded = FrameworkClient.IsPlayerLoaded()
+```
+
+### Méthodes du PlayerClient
+
+```lua
+player:isLoaded()           -- Vrai si le personnage est chargé
+player:getName()            -- "Prénom Nom"
+player:getJob()             -- job, jobGrade
+player:getMoney('cash')     -- Argent liquide local
+player:getMoney('bank')     -- Argent en banque local
+player:getPed()             -- Handle du ped local
+player:getCoords()          -- Coordonnées actuelles
+player:getHeading()         -- Direction actuelle
+player:getVehicle()         -- Handle du véhicule actuel (0 si aucun)
+player:isInVehicle()        -- Booléen
+player:teleport(x, y, z)    -- Téléporte le joueur (ou son véhicule)
+player:freeze(true/false)   -- Fige/libère le joueur
+player:setInvincible(bool)  -- God mode
+player:setVisible(bool)     -- Visibilité
+player:getHealth()          -- Points de vie
+player:setHealth(200)       -- Définit les points de vie
+player:getArmour()          -- Armure
+player:setArmour(100)       -- Définit l'armure
+player:isDead()             -- Vrai si mort
+player:notify('message')    -- Notification simple
+player:savePosition()       -- Déclenche la sauvegarde de position
+```
+
+### Helpers client
+
+```lua
+-- Joueur le plus proche
+local serverId, distance = FrameworkClient.GetClosestPlayer(3.0)
+
+-- Véhicule le plus proche
+local veh, distance = FrameworkClient.GetClosestVehicle(5.0)
+
+-- Spawn un véhicule (retourne VehicleClient via callback)
+FrameworkClient.SpawnVehicle(model, coords, heading, function(veh) end)
+
+-- Texte 3D dans le monde
+FrameworkClient.DrawText3D(x, y, z, 'Texte')
+```
+
+---
+
+## Véhicules
+
+### Côté client — VehicleClient
+
+Toutes les opérations sur un véhicule passent par un objet `VehicleClient`.
+
+```lua
+local veh = VehicleClient:new(vehicleHandle)
+```
+
+**Propriétés et déplacements :**
+
+```lua
+veh:exists()                        -- Vérifie si l'entité existe
+veh:getHandle()                     -- Handle brut
+veh:getCoords()                     -- Coordonnées
+veh:setCoords(x, y, z)             -- Déplace le véhicule
+veh:getHeading()                    -- Direction
+veh:setHeading(heading)             -- Définit la direction
+```
+
+**État du véhicule :**
+
+```lua
+veh:repair()                        -- Répare complètement le véhicule
+veh:clean()                         -- Nettoie la saleté
+veh:getFuel()                       -- Niveau de carburant
+veh:setFuel(100.0)                  -- Définit le carburant
+veh:getPlate()                      -- Plaque d'immatriculation
+veh:setPlate('ABC1234')             -- Définit la plaque
+veh:lock(2)                         -- Verrouille (2 = locked, 1 = unlocked)
+veh:isLocked()                      -- État du verrou
+veh:getBodyHealth()                 -- Santé de la carrosserie
+veh:getEngineHealth()               -- Santé du moteur
+veh:setBodyHealth(1000.0)
+veh:setEngineHealth(1000.0)
+veh:isEngineOn()                    -- Moteur allumé ?
+veh:setEngineOn(true)
+veh:getSpeed()                      -- Vitesse en m/s
+veh:getSpeedKmh()                   -- Vitesse en km/h
+veh:delete()                        -- Supprime l'entité
+```
+
+**Apparence :**
+
+```lua
+veh:getColors()                     -- color1, color2
+veh:setColors(12, 12)
+veh:getExtraColors()                -- pearlescent, wheel
+veh:setExtraColors(12, 0)
+veh:setWheelType(7)
+veh:setWindowTint(1)
+veh:setNeonLights(true)
+veh:setNeonColor(255, 0, 255)
+veh:setLivery(0)
+veh:setMod(modType, modIndex)       -- Modification de tuning
+veh:getMod(modType)
+veh:setExtra(id, true)
+```
+
+**Portes, vitres, pneus :**
+
+```lua
+veh:openDoor(index)
+veh:closeDoor(index)
+veh:breakDoor(index)
+veh:popTyre(index)
+veh:fixTyre(index)
+veh:breakWindow(index)
+veh:fixWindow(index)
+```
+
+**Props complets (serialisation) :**
+
+```lua
+local props = veh:getProperties()   -- Sérialise tout l'état du véhicule
+veh:setProperties(props)            -- Restaure l'état complet
+```
+
+**Occupants :**
+
+```lua
+veh:getDriver()
+veh:hasDriver()
+veh:getPassengers()
+veh:getOccupants()
+veh:isEmpty()
+```
+
+**Autres :**
+
+```lua
+veh:explode()
+veh:setSiren(true)
+veh:setAlarm(true)
+veh:freeze(true)
+veh:setInvincible(true)
+veh:attachToEntity(entity, ox, oy, oz, rx, ry, rz)
+veh:detach()
+```
+
+### Persistance des véhicules
+
+Les véhicules sont sauvegardés en base via `vehicle_metas` avec la clé `props`. Leur position est mise à jour toutes les 5 secondes pour chaque véhicule sur la map, et toutes les 10 secondes pour le véhicule du joueur.
+
+Un véhicule peut être marqué **persistant** : il réapparaît automatiquement à sa dernière position au redémarrage du serveur, tant qu'il n'est pas dans un garage.
+
+**Verrou temps réel :** le verrou est synchronisé via state bags. Seul le propriétaire (characterId) peut le changer, et uniquement à moins de 10 mètres.
+
+---
+
+## Sociétés
+
+Les sociétés représentent les organisations (police, médecins, entreprises...).
+
+### Structure d'une société
+
+```
+Society
+├── name          -- Identifiant unique (ex: 'police')
+├── label         -- Nom affiché (ex: 'Police Nationale')
+├── money         -- Compte bancaire
+├── grades[]      -- Liste des grades
+│   ├── grade     -- Numéro du grade
+│   ├── label     -- Nom du grade
+│   ├── salary    -- Salaire
+│   └── permissions[]
+└── employees[]   -- Liste des employés
+    ├── characterId
+    ├── firstname, lastname
+    ├── grade
+    └── hiredAt
+```
+
+### Méthodes serveur (Society)
+
+```lua
+society:addMoney(amount)
+society:removeMoney(amount)         -- Retourne true/false
+society:addGrade(grade, label, salary, permissions, cb)
+society:removeGrade(grade, cb)
+society:addEmployee(characterId, grade, cb)
+society:removeEmployee(characterId, cb)
+society:setEmployeeGrade(characterId, grade, cb)
+society:loadGrades(cb)
+society:loadEmployees(cb)
+society:delete(cb)
+```
+
+### SocietyManager
+
+```lua
+Framework.SocietyManager:getSociety('police')
+Framework.SocietyManager:getAllSocieties()
+Framework.SocietyManager:societyExists('police')
+Framework.SocietyManager:createSociety(name, label, bossPosition, cb)
+Framework.SocietyManager:deleteSociety(name, cb)
+```
+
+### Interface de gestion
+
+La commande `/createGroup` (admin) ouvre un menu permettant de :
+- Créer une société (nom, label, grades avec salaires)
+- Gérer une société existante (grades, employés, solde)
+- Attribuer une société à un personnage via "Me définir une société"
+- Retirer un employé
+- Supprimer une société
+
+---
+
+## Groupes et permissions
+
+Trois groupes sont définis par défaut, avec un système de niveaux :
+
+| Groupe | Niveau | Description |
+|---|---|---|
+| `user` | 1 | Joueur standard |
+| `admin` | 2 | Administrateur |
+| `owner` | 3 | Propriétaire du serveur |
+
+Le système est hiérarchique : un owner a toutes les permissions admin, un admin a toutes les permissions user.
+
+### Utilisation
+
+```lua
+-- Serveur
+player:hasPermission('admin')               -- Booléen
+Framework.GroupManager:hasPermission(group, required) -- Booléen
+
+-- Changer le groupe
+Framework.GroupManager:setGroup(source, 'admin', cb)
+Framework.GroupManager:setGroupById(characterId, 'admin', cb)
+
+-- Depuis la console ou une commande
+/setgroup [id] [groupe]
+```
+
+---
+
+## Métiers (Jobs)
+
+Les métiers sont chargés depuis les tables `jobs` et `job_grades` au démarrage.
+
+```lua
+-- Récupérer un métier
+local job = Framework.JobManager:getJob('police')
+
+-- Tous les métiers
+local jobs = Framework.JobManager:getAllJobs()
+
+-- Créer / supprimer
+Framework.JobManager:createJob(name, label, cb)
+Framework.JobManager:deleteJob(name, cb)
+Framework.JobManager:addGrade(jobName, grade, label, salary, cb)
+```
+
+Un joueur peut changer de métier via :
+
+```lua
+player:setJob('police', 2)
+-- Met à jour les state bags, la BDD et notifie le client
+```
+
+---
+
+## Inventaire
+
+Module : `modules/inv/`
+
+L'inventaire est basé sur un système de slots. Chaque item a un poids. Il prend en charge :
+
+- Items classiques
+- Armes (avec munitions et métadonnées)
+- Coffres partagés (stashes)
+- Magasins (shops)
+- Casiers (lockers)
+- Craft (fabrication)
+- Trade entre joueurs
+
+### Utilisation côté client
+
+```lua
+-- Ajouter un item (déclenche côté serveur)
+addItem('water_bottle', 1)
+
+-- Retirer un item d'un slot
+removeItem(slot, quantity)
+```
+
+### Événements clés
+
+| Événement | Direction | Description |
+|---|---|---|
+| `inventory:forceLoad` | Serveur -> Client | Charge l'inventaire au spawn |
+| `inventory:receiveItem` | Serveur -> Client | Reçoit un item |
+| `inventory:notifyAdd` | Serveur -> Client | Notification d'ajout |
+| `inventory:reloadInventory` | Serveur -> Client | Rafraîchit l'UI |
+
+---
+
+## HUD
+
+Module : `modules/hud/`
+
+Le HUD affiche en temps réel :
+
+- Santé
+- Armure
+- Faim
+- Soif
+- Stamina
+- Niveau de voix (murmure, normal, cri)
+- État du radar (activé/désactivé)
+
+### Mise à jour des besoins
+
+```lua
+-- Depuis le serveur
+TriggerClientEvent('hud:updateNeeds', source, hunger, thirst)
+TriggerClientEvent('hud:fullNeeds', source)
+TriggerClientEvent('hud:setArmor', source, value)
+TriggerClientEvent('hud:updateHealthDead', source)
+```
+
+---
+
+## Notifications
+
+Module : `modules/notif/`
+
+Quatre types de notifications sont disponibles, toutes prenant en charge les couleurs GTA (`~r~`, `~g~`, `~b~`, `~y~`, `~s~`...).
+
+### Notification simple
+
+```lua
+SendSimpleNotif('Message simple', 5000)
+```
+
+### Notification avancée (avec image)
+
+```lua
+SendAdvancedNotif('Titre', 'Sous-titre', 'Description', imageUrl, 5000)
+```
+
+### Annonce (bandeau centré)
+
+```lua
+SendAnnouncementNotif('Titre', 'Description', 5000)
+```
+
+### Publicité (avec bannière)
+
+```lua
+SendAdvertisementNotif('Titre', 'Texte', 'banner.jpg', 'icon.png', 7000)
+```
+
+Ces fonctions sont également disponibles comme événements réseau depuis le serveur :
+
+```lua
+TriggerClientEvent('SendAdvancedNotif', source, titre, sous_titre, desc, img, duree)
+```
+
+Et via exports depuis d'autres ressources :
+
+```lua
+exports['kr']:SendSimpleNotif('Message')
+exports['kr']:SendAdvancedNotif(titre, sous_titre, desc, img)
+```
+
+---
+
+## Menu UI
+
+Module : `modules/menu/`
+
+L'objet global `kr` expose l'ensemble du système de menus NUI.
+
+### Créer et afficher un menu
+
+```lua
+kr.registerMenu({
+    id       = 'mon_menu',
+    title    = 'Titre du menu',
+    subtitle = 'Sous-titre',
+    options  = {
+        {
+            title       = 'Option 1',
+            description = 'Description',
+            icon        = 'fas fa-star',
+            onSelect    = function()
+                -- action
+            end
+        },
+        {
+            title      = 'Sous-menu',
+            hasSubmenu = true,
+            submenuId  = 'autre_menu'
+        },
+        {
+            title     = 'Section',
+            isSection = true
+        },
+        {
+            title      = 'Checkbox',
+            type       = 'checkbox',
+            modelValue = false,
+            onSelect   = function() end
+        },
+        {
+            title      = 'Liste',
+            type       = 'list',
+            options    = { 'Option A', 'Option B' },
+            modelValue = 'Option A',
+            onSelect   = function() end
+        }
+    }
+})
+
+kr.showMenu('mon_menu')
+kr.hideMenu()
+```
+
+### Dialogues
+
+```lua
+-- Alerte avec confirmation
+local result = kr.alertDialog({
+    message = 'Confirmer cette action ?',
+    confirm = 'Oui',
+    cancel  = 'Non'
+})
+if result == 'accept' then ... end
+
+-- Saisie de texte
+local data = kr.inputDialog('Titre du formulaire', {
+    { name = 'prenom', label = 'Prénom', type = 'text',   required = true },
+    { name = 'age',    label = 'Age',    type = 'number', required = false }
+})
+if data then
+    print(data.prenom, data.age)
+end
+
+-- Choix multiple
+local choice = kr.choiceDialog({
+    title   = 'Choisir',
+    message = 'Que souhaitez-vous faire ?',
+    choices = { 'Action A', 'Action B' }
+})
+```
+
+### Autres composants UI
+
+```lua
+-- Barre de progression (bloquante)
+local completed = kr.progressBar({ label = 'Chargement...', duration = 5000 })
+
+-- Cercle de progression (bloquant)
+local completed = kr.progressCircle({ duration = 3000, size = 100 })
+
+-- Texte contextuel (non bloquant)
+kr.showTextUI('[E] Interagir')
+kr.showTextUI({ { key = '[E]', text = 'Ouvrir' }, { key = '[F]', text = 'Fermer' } })
+kr.hideTextUI()
+
+-- Mini-jeu de compétence
+local success = kr.skillCheck('medium', { 'E' })
+-- Difficultés : 'easy', 'medium', 'hard'
+-- Ou valeurs personnalisées : { zoneSize, speed }
+
+-- Notification UI
+kr.notify({
+    type        = 'success',  -- 'success', 'error', 'info', 'warning'
+    title       = 'Titre',
+    description = 'Message',
+    duration    = 3000
+})
+```
+
+---
+
+## Garage
+
+Module : `modules/garage/`
+
+Le garage permet de stocker et de sortir des véhicules. Les garages sont définis dans le fichier client du module avec leurs coordonnées et leur rayon de détection.
+
+**Fonctionnement :**
+
+- À proximité d'un garage, un marqueur apparaît.
+- En véhicule : option pour le ranger (le supprime de la map, le sauvegarde en BDD).
+- À pied : option pour ouvrir l'interface et sortir un véhicule.
+- Un blip est ajouté sur la carte pour chaque garage configuré.
+
+**Commande :** `/garage` — ouvre le garage si vous êtes dans la zone et à pied.
+
+L'interface NUI liste les véhicules disponibles avec leur nom et leur plaque.
+
+---
+
+## Propriétés
+
+Module : `modules/property/`
+
+Le système de propriétés gère les appartements et intérieurs IPL de GTA V. Les types supportés sont : appartements, garages, entrepôts.
+
+Les intérieurs disponibles incluent les penthouse d'Alta St, Rockford Hills, Del Perro, Burton, Eclipse Towers, Weazel Plaza.
+
+Chaque propriété peut avoir :
+- Un point d'entrée (extérieur)
+- Un intérieur IPL
+- Un coffre (chest) lié à l'owner
+- Un blip sur la map
+
+---
+
+## Points d'intérêt (POI)
+
+Module : `modules/poi/`
+
+Le système POI permet aux admins de placer des points d'intérêt directement en jeu, persistants en base. Chaque POI a un type, une position, et des données associées.
+
+### Types disponibles
+
+| Type | Description |
+|---|---|
+| `garage` | Ouvre un garage à cet emplacement |
+| `stash` | Coffre partagé avec ID et poids configurables |
+| `shop` | Magasin lié à un ID de shop |
+| `locker` | Casiers liés à un ID |
+| `craft` | Table d'artisanat (workbench, etc.) |
+| `teleport` | Téléporte vers des coordonnées définies |
+| `petshop` | Animalerie |
+| `boss_menu` | Menu patron d'une société |
+| `atm` | Distributeur de billets |
+
+**Distances de configuration :**
+
+| Paramètre | Valeur |
+|---|---|
+| Interaction | 2.5 m |
+| Affichage | 50 m |
+| Zone proche | 5 m |
+| Zone lointaine | 15 m |
+
+---
+
+## Commandes
+
+### Commandes joueur
+
+| Commande | Description |
+|---|---|
+| `/relog` | Sauvegarde et retourne à la sélection de personnage |
+| `/save` | Sauvegarde manuellement le personnage |
+| `/sync` | Synchronise les données du personnage |
+| `/coords` | Affiche les coordonnées actuelles |
+| `/suicide` | Tue le personnage |
+| `/tpm` | Téléporte au waypoint défini sur la carte |
+| `/dv` | Supprime le véhicule proche ou celui dans lequel on est |
+| `/lock` | Verrouille ou déverrouille le véhicule proche |
+| `/clear` | Efface le chat |
+| `/spawnvehiclebyplate [plaque]` | Sort un véhicule depuis la BDD par plaque |
+| `/bringvehicleplate [plaque]` | Téléporte un véhicule spawné jusqu'à vous |
+| `/modifychar` | Ouvre l'éditeur d'apparence |
+| `/garage` | Ouvre le garage si vous êtes dans la zone |
+| `/radar` | Active ou désactive le radar |
+
+### Commandes admin
+
+| Commande | Permission | Description |
+|---|---|---|
+| `/setgroup [id] [groupe]` | admin | Change le groupe d'un joueur |
+| `/car [modèle]` | admin | Spawn un véhicule |
+| `/fix` | admin | Répare le véhicule actuel |
+| `/fuel` | admin | Remplit le carburant |
+| `/heal` | admin | Soigne complètement |
+| `/god` | admin | Active/désactive le god mode |
+| `/invisible` | admin | Active/désactive l'invisibilité |
+| `/freeze` | admin | Fige/libère le joueur |
+| `/tuning` | admin | Applique le tuning maximal sur le véhicule |
+| `/setTime [heure] [minute]` | admin | Définit l'heure pour tout le serveur |
+| `/cleararea` | admin | Nettoie les véhicules, peds et objets à proximité |
+| `/createGroup` | admin | Ouvre le gestionnaire de sociétés |
+| `/checkpersist [plaque]` | admin | Vérifie si un véhicule est persistant |
+| `/removepersist [plaque]` | admin | Supprime un véhicule persistant |
+| `/errors [type] [limite]` | admin | Affiche les dernières erreurs framework |
+| `/clearerrors` | admin | Efface le log d'erreurs |
+
+---
+
+## Exports serveur
+
+Depuis n'importe quelle ressource, utilisez `exports['kr']` pour accéder aux fonctions du framework.
+
+### Joueur
+
+```lua
+exports['kr']:GetPlayer(source)              -- Retourne l'objet Player
+exports['kr']:GetPlayerFromId(characterId)   -- Cherche par character ID
+exports['kr']:GetPlayerFromLicense(license)  -- Cherche par licence
+exports['kr']:GetPlayerState(source, key)    -- Lit un state bag
+exports['kr']:SetPlayerState(source, key, val) -- Écrit un state bag
+exports['kr']:HasPermission(source, 'admin') -- Vérifie la permission
+exports['kr']:GetPlayerGroup(source)         -- Retourne le groupe
+exports['kr']:SetGroup(source, 'admin')      -- Change le groupe
+exports['kr']:SetGroupById(characterId, 'admin')
+```
+
+### Monnaie (via export direct)
+
+```lua
+exports['kr']:updateMoney(source, 'cash', 500, 'add')
+exports['kr']:updateMoney(source, 'bank', 200, 'remove')
+-- types : 'cash', 'bank'
+-- actions : 'add', 'remove'
+```
+
+### Véhicules
+
+```lua
+exports['kr']:SetVehiclePersistent(source, plate)       -- Rend un véhicule persistant
+exports['kr']:GetVehiclePersistent(plate, callback)     -- Vérifie si persistant
+exports['kr']:RemoveVehiclePersistent(plate, callback)  -- Supprime la persistance
+```
+
+### Personnage / Skin
+
+```lua
+exports['kr']:requestSkinData(source)  -- Ouvre l'éditeur d'apparence pour ce joueur
+exports['kr']:syncPlayer(source)       -- Synchronise les données du joueur
+```
+
+### Erreurs
+
+```lua
+exports['kr']:HandleError(type, message, data, source)
+exports['kr']:GetErrors(type, limit)
+```
+
+---
+
+## Exports client
+
+Depuis n'importe quelle ressource client, utilisez `exports['kr']`.
+
+### Joueur
+
+```lua
+exports['kr']:GetPlayer()               -- Objet PlayerClient local
+exports['kr']:IsPlayerLoaded()          -- Booléen
+exports['kr']:syncPlayer()              -- Déclenche une sync serveur
+
+-- Raccourcis directs
+exports['kr']:Player_GetName()
+exports['kr']:Player_GetJob()           -- { job, grade }
+exports['kr']:Player_GetMoney('cash')
+exports['kr']:Player_GetCoords()
+exports['kr']:Player_GetHeading()
+exports['kr']:Player_GetVehicle()
+exports['kr']:Player_IsInVehicle()
+exports['kr']:Player_Teleport(x, y, z, heading)
+exports['kr']:Player_Freeze(true)
+exports['kr']:Player_SetInvincible(true)
+exports['kr']:Player_SetVisible(true)
+exports['kr']:Player_GetHealth()
+exports['kr']:Player_SetHealth(200)
+exports['kr']:Player_GetArmour()
+exports['kr']:Player_SetArmour(100)
+exports['kr']:Player_IsDead()
+exports['kr']:Player_Notify('message')
+```
+
+### Véhicule
+
+```lua
+exports['kr']:Vehicle_Spawn(model, coords, heading) -- Retourne le handle
+exports['kr']:Vehicle_GetClosest(radius)            -- Handle + distance
+exports['kr']:Vehicle_Exists(handle)
+exports['kr']:Vehicle_Delete(handle)
+exports['kr']:Vehicle_GetCoords(handle)
+exports['kr']:Vehicle_SetCoords(handle, x, y, z)
+exports['kr']:Vehicle_GetHeading(handle)
+exports['kr']:Vehicle_SetHeading(handle, heading)
+exports['kr']:Vehicle_Repair(handle)
+exports['kr']:Vehicle_GetBodyHealth(handle)
+exports['kr']:Vehicle_GetEngineHealth(handle)
+exports['kr']:Vehicle_SetBodyHealth(handle, health)
+exports['kr']:Vehicle_SetEngineHealth(handle, health)
+exports['kr']:Vehicle_Clean(handle)
+exports['kr']:Vehicle_GetFuel(handle)
+exports['kr']:Vehicle_SetFuel(handle, level)
+exports['kr']:Vehicle_GetPlate(handle)
+exports['kr']:Vehicle_SetPlate(handle, plate)
+exports['kr']:Vehicle_Lock(handle, state)
+exports['kr']:Vehicle_IsLocked(handle)
+exports['kr']:Vehicle_GetSpeed(handle)
+exports['kr']:Vehicle_GetSpeedKmh(handle)
+exports['kr']:Vehicle_SetSpeed(handle, speed)
+exports['kr']:Vehicle_GetModel(handle)
+exports['kr']:Vehicle_GetModelName(handle)
+exports['kr']:Vehicle_GetColors(handle)
+exports['kr']:Vehicle_SetColors(handle, c1, c2)
+exports['kr']:Vehicle_GetProperties(handle)
+exports['kr']:Vehicle_SetProperties(handle, props)
+exports['kr']:Vehicle_SaveToDatabase(handle)
+```
+
+### Notifications
+
+```lua
+exports['kr']:SendSimpleNotif(message, duration)
+exports['kr']:SendAdvancedNotif(titre, sous_titre, desc, img, duration)
+exports['kr']:SendAnnouncementNotif(titre, desc, duration)
+exports['kr']:SendAdvertisementNotif(titre, desc, banner, img, duration)
+```
+
+---
+
+## Utilitaires partagés
+
+`shared/Utils.lua` — disponible côté client et serveur.
+
+```lua
+-- Validation de types
+Utils.isValidType(value, 'string')          -- Booléen
+Utils.isValidString(str, minLen, maxLen)    -- Booléen
+Utils.isValidNumber(num, min, max)          -- Booléen
+
+-- JSON sécurisé (ne lève pas d'erreur)
+Utils.safeJsonEncode(data)                  -- string ou nil
+Utils.safeJsonDecode(str)                   -- table ou nil
+
+-- Appel sécurisé avec gestion d'erreur
+Utils.safePcall(func, errorType, context, errorHandler)
+
+-- Callback sécurisé
+Utils.executeCallback(cb, ...)              -- Appelle cb si défini
+
+-- Maths
+Utils.clamp(value, min, max)
+Utils.round(value, decimals)
+Utils.formatMoney(amount)                   -- "$1,234"
+Utils.formatNumber(num)                     -- "1,234"
+
+-- Tables
+Utils.tableContains(t, element)
+Utils.tableCopy(t)                          -- Copie superficielle
+Utils.tableDeepCopy(t)                      -- Copie profonde
+Utils.tableMerge(t1, t2)                    -- Fusionne t2 dans t1
+Utils.tableCount(t)                         -- Compte les clés
+```
+
+`shared/CommandValidator.lua` — validation des arguments de commandes.
+
+```lua
+CommandValidator.validateSource(source)                 -- Non-console
+CommandValidator.validateArgs(args, minArgs)
+CommandValidator.validatePlayer(source)                 -- Player, valid
+CommandValidator.validateAdminCommand(source, 'admin')  -- Player, valid, isConsole
+CommandValidator.validatePlate(plate)                   -- 1-8 chars
+CommandValidator.validateModel(model)                   -- 1-50 chars
+CommandValidator.validateCoords(x, y, z)
+CommandValidator.validateTime(hour, minute)
+CommandValidator.validateAmount(amount, min, max)
+CommandValidator.validateMoneyType(type)                -- 'cash' ou 'bank'
+CommandValidator.validateAction(action, validActions)
+```
+
+---
+
+## Gestion des erreurs
+
+Le framework intègre un `ErrorHandler` centralisé. Toutes les opérations critiques (chargement joueur, BDD, véhicules...) sont encapsulées dans `Utils.safePcall` avec un type d'erreur et un contexte.
+
+```lua
+-- Log une erreur manuellement
+Framework.ErrorHandler:handle('MON_TYPE', 'Message', { data = ... }, source)
+
+-- Consulter les erreurs
+local errors = Framework.ErrorHandler:getErrors('MON_TYPE', 10)
+
+-- Effacer
+Framework.ErrorHandler:clearErrors()
+```
+
+En jeu, les commandes `/errors` et `/clearerrors` permettent aux admins de consulter et effacer le log en temps réel.
+
+---
+
+## Événements réseau clés
+
+### Serveur -> Client
+
+| Événement | Description |
+|---|---|
+| `framework:client:playerLoaded` | Personnage chargé, données envoyées |
+| `framework:client:spawnPlayer` | Spawn du ped à une position |
+| `framework:client:updateMoney` | Mise à jour de l'argent local |
+| `framework:client:updateJob` | Mise à jour du métier local |
+| `framework:client:notify` | Notification simple |
+| `framework:client:applyAppearance` | Applique le skin |
+| `framework:client:openCharacterSelect` | Ouvre la sélection de personnage |
+
+### Client -> Serveur
+
+| Événement | Description |
+|---|---|
+| `framework:server:checkPlayer` | Vérifie l'état d'authentification |
+| `framework:server:playerReadyToLoad` | Prêt à charger un personnage |
+| `framework:server:selectCharacter` | Sélectionne un personnage |
+| `framework:server:createCharacter` | Crée un personnage |
+| `framework:server:deleteCharacter` | Supprime un personnage |
+| `framework:server:syncPlayer` | Synchronise la position et les données |
+| `framework:server:savePosition` | Sauvegarde la position |
+| `framework:server:updateSkin` | Sauvegarde l'apparence |
+| `framework:server:updateVehicleFuel` | Met à jour le carburant via state bag |
+| `framework:server:updateVehicleLock` | Met à jour le verrou via state bag |
+| `framework:server:loadPersistedVehicles` | Charge les véhicules persistants |
